@@ -6,13 +6,21 @@ on:
 jobs:
   run-n8n:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # تشغيل 6 ساعات
+    timeout-minutes: 360
 
     steps:
-      - name: 🧱 Update System & Install Docker
+      - name: 🧱 Install Docker (Fixed)
         run: |
           sudo apt update -y
-          sudo apt install -y docker.io curl unzip
+          sudo apt install -y ca-certificates curl gnupg lsb-release
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+            https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt update -y
+          sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
           sudo systemctl enable docker
           sudo systemctl start docker
 
@@ -40,4 +48,4 @@ jobs:
       - name: 🕓 Keep server running
         run: |
           echo "n8n and VPS are running..."
-          sleep 21600  # 6 ساعات تشغيل مستمر
+          sleep 21600
