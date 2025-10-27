@@ -1,51 +1,84 @@
-name: n8n VPS Auto Deploy
-
+name: N8N VPS with Ngrok
 on:
   workflow_dispatch:
 
 jobs:
-  run-n8n:
+  n8n-vps:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: 🧱 Install Docker (Fixed)
+      - name: 🧱 Setup environment
         run: |
           sudo apt update -y
-          sudo apt install -y ca-certificates curl gnupg lsb-release
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-          sudo apt update -y
-          sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-          sudo systemctl enable docker
-          sudo systemctl start docker
+          sudo apt install -y curl wget unzip openssh-server
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+          echo "root:12345" | sudo chpasswd
+          echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
+          sudo service ssh restart
+          echo "✅ SSH ready — user: root / pass: 12345"
 
-      - name: 🧰 Install ngrok
+      - name: ⚙️ Install Node.js & n8n
         run: |
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update -y
-          sudo apt install -y ngrok
-          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt install -y nodejs
+          sudo npm install -g n8n
+          echo "✅ n8n installed successfully!"
 
-      - name: 🐳 Run n8n in Docker
+      - name: 🚀 Start n8n in background
         run: |
-          sudo docker run -d --name n8n -p 5678:5678 n8nio/n8n
-
-      - name: 🌍 Start ngrok Tunnel
-        run: |
-          nohup ngrok http 5678 --log=stdout > ngrok.log &
+          nohup n8n start --port 5678 > n8n.log 2>&1 &
           sleep 10
-          echo "-----------------------------------------"
-          echo "🌐 Your n8n public URL:"
-          curl --silent http://127.0.0.1:4040/api/tunnels | grep -o 'https://[a-zA-Z0-9.-]*\.ngrok-free\.app'
-          echo "-----------------------------------------"
+          echo "✅ n8n started on port 5678"
 
-      - name: 🕓 Keep server running
+      - name: 🌍 Install & start Ngrok
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          echo "n8n and VPS are running..."
-          sleep 21600
+          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip -o ngrok.zip
+          unzip ngrok.zip
+          sudo mv ngrok /usr/local/bin/
+          ngrok config add-authtoken $NGROK_AUTH_TOKEN
+          
+          echo "🔁 Starting Ngrok HTTP tunnel for n8n..."
+          nohup ngrok http 5678 --log=stdout > ngrok.log &
+          sleep 20
+          
+          echo "🌐 Fetching public URL..."
+          for i in {1..5}; do
+            url=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o 'https://[a-zA-Z0-9.-]*\.ngrok-free\.app' || true)
+            if [ -n "$url" ]; then
+              echo "✅ Your n8n public URL: $url"
+              echo "n8n_URL=$url" >> $GITHUB_ENV
+              break
+            fi
+            echo "Waiting for ngrok tunnel..."
+            sleep 5
+          done
+          if [ -z "$url" ]; then
+            echo "❌ Could not retrieve ngrok URL. Check ngrok.log for details."
+            cat ngrok.log
+          fi
+
+      - name: 🔐 Start Ngrok SSH tunnel
+        run: |
+          echo "🔁 Starting SSH tunnel..."
+          nohup ngrok tcp 22 --log=stdout > ngrok_ssh.log &
+          sleep 15
+          ssh_info=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -Eo "tcp://[0-9a-zA-Z\.\-:]*" | head -n 1 || true)
+          if [ -n "$ssh_info" ]; then
+            echo "✅ SSH Access via: $ssh_info"
+            echo "Use Termius or PuTTY with: root / 12345"
+          else
+            echo "❌ SSH tunnel not found."
+            cat ngrok_ssh.log
+          fi
+
+      - name: 🕐 Keep VPS alive
+        run: |
+          echo "VPS running. Use Ctrl+C to stop manually."
+          while true; do
+            echo "[$(date)] Still alive..."
+            sleep 300
+          done
